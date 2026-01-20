@@ -828,8 +828,8 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
                     const auto durations = segment_data.GetForwardDurations(geometry_id.id);
                     if (segment_position < weights.size())
                     {
-                        new_weight = alias_cast<EdgeWeight>(weights[segment_position]);
-                        new_duration = alias_cast<EdgeDuration>(durations[segment_position]);
+                        new_weight = alias_cast<EdgeWeight>(SegmentWeight(weights[segment_position]));
+                        new_duration = alias_cast<EdgeDuration>(SegmentDuration(durations[segment_position]));
                     }
                 }
                 else
@@ -840,8 +840,8 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
                     auto reverse_position = weights.size() - 1 - segment_position;
                     if (reverse_position < weights.size())
                     {
-                        new_weight = alias_cast<EdgeWeight>(weights[reverse_position]);
-                        new_duration = alias_cast<EdgeDuration>(durations[reverse_position]);
+                        new_weight = alias_cast<EdgeWeight>(SegmentWeight(weights[reverse_position]));
+                        new_duration = alias_cast<EdgeDuration>(SegmentDuration(durations[reverse_position]));
                     }
                 }
             }
