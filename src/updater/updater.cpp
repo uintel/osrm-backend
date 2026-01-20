@@ -3,6 +3,7 @@
 
 #include "extractor/compressed_edge_container.hpp"
 #include "extractor/edge_based_graph_factory.hpp"
+#include "extractor/edge_based_node_segment.hpp"
 #include "extractor/files.hpp"
 #include "extractor/packed_osm_ids.hpp"
 #include "extractor/restriction.hpp"
@@ -15,6 +16,7 @@
 #include "util/for_each_pair.hpp"
 #include "util/integer_range.hpp"
 #include "util/log.hpp"
+#include "util/mmap_file.hpp"
 #include "util/mmap_tar.hpp"
 #include "util/opening_hours.hpp"
 #include "util/static_rtree.hpp"
@@ -573,6 +575,8 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
     extractor::ProfileProperties profile_properties;
     std::vector<TurnPenalty> turn_weight_penalties;
     std::vector<TurnPenalty> turn_duration_penalties;
+    // Map from edge-based node ID to its segment position within its geometry
+    std::vector<unsigned short> edge_based_node_to_segment_position;
     if (update_edge_weights || update_turn_penalties || update_conditional_turns)
     {
         tbb::parallel_invoke(
@@ -594,6 +598,33 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
             {
                 extractor::files::readProfileProperties(config.GetPath(".osrm.properties"),
                                                         profile_properties);
+            },
+            [&]
+            {
+                // Load segment position data from .osrm.fileIndex
+                // The .osrm.fileIndex file contains EdgeBasedNodeSegment objects that are mmap'd
+                boost::iostreams::mapped_file_source segment_region;
+                auto segments = util::mmapFile<extractor::EdgeBasedNodeSegment>(
+                    config.GetPath(".osrm.fileIndex"), segment_region);
+
+                edge_based_node_to_segment_position.resize(number_of_edge_based_nodes, 0);
+
+                for (const auto& segment : segments)
+                {
+                    if (segment.forward_segment_id.enabled)
+                    {
+                        edge_based_node_to_segment_position[segment.forward_segment_id.id] =
+                            segment.fwd_segment_position;
+                    }
+                    if (segment.reverse_segment_id.enabled)
+                    {
+                        edge_based_node_to_segment_position[segment.reverse_segment_id.id] =
+                            segment.fwd_segment_position;
+                    }
+                }
+
+                util::Log() << "Loaded segment position data for " << segments.size()
+                            << " EdgeBasedNodeSegments";
             });
     }
 
@@ -676,57 +707,70 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
                        [](const GeometryID lhs, const GeometryID rhs)
                        { return std::tie(lhs.id, lhs.forward) < std::tie(rhs.id, rhs.forward); });
 
-    using WeightAndDuration = std::tuple<EdgeWeight, EdgeDuration>;
-    const auto compute_new_weight_and_duration =
-        [&](const GeometryID geometry_id) -> WeightAndDuration
+    struct SegmentValidityData
     {
-        EdgeWeight new_weight = {0};
-        EdgeDuration new_duration = {0};
+        std::vector<bool> segment_valid;  // Per-segment validity flags
+        EdgeWeight accumulated_weight;     // Full geometry weight (for reference)
+        EdgeDuration accumulated_duration; // Full geometry duration (for reference)
+    };
+
+    const auto compute_segment_validity =
+        [&](const GeometryID geometry_id) -> SegmentValidityData
+    {
+        SegmentValidityData result;
+        result.accumulated_weight = {0};
+        result.accumulated_duration = {0};
+
         if (geometry_id.forward)
         {
             const auto weights = segment_data.GetForwardWeights(geometry_id.id);
+            result.segment_valid.reserve(weights.size());
+
             for (const SegmentWeight weight : weights)
             {
-                if (weight == INVALID_SEGMENT_WEIGHT)
+                result.segment_valid.push_back(weight != INVALID_SEGMENT_WEIGHT);
+                if (weight != INVALID_SEGMENT_WEIGHT)
                 {
-                    new_weight = INVALID_EDGE_WEIGHT;
-                    break;
+                    result.accumulated_weight += alias_cast<EdgeWeight>(weight);
                 }
-                new_weight += alias_cast<EdgeWeight>(weight);
             }
+
             const auto durations = segment_data.GetForwardDurations(geometry_id.id);
             // NOLINTNEXTLINE(bugprone-fold-init-type)
-            new_duration = alias_cast<EdgeDuration>(
+            result.accumulated_duration = alias_cast<EdgeDuration>(
                 std::accumulate(durations.begin(), durations.end(), SegmentDuration{0}));
         }
         else
         {
             const auto weights = segment_data.GetReverseWeights(geometry_id.id);
+            result.segment_valid.reserve(weights.size());
+
             for (const SegmentWeight weight : weights)
             {
-                if (weight == INVALID_SEGMENT_WEIGHT)
+                result.segment_valid.push_back(weight != INVALID_SEGMENT_WEIGHT);
+                if (weight != INVALID_SEGMENT_WEIGHT)
                 {
-                    new_weight = INVALID_EDGE_WEIGHT;
-                    break;
+                    result.accumulated_weight += alias_cast<EdgeWeight>(SegmentWeight(weight));
                 }
-                new_weight += alias_cast<EdgeWeight>(SegmentWeight(weight));
             }
+
             const auto durations = segment_data.GetReverseDurations(geometry_id.id);
             // NOLINTNEXTLINE(bugprone-fold-init-type)
-            new_duration = alias_cast<EdgeDuration>(
+            result.accumulated_duration = alias_cast<EdgeDuration>(
                 std::accumulate(durations.begin(), durations.end(), SegmentDuration{0}));
         }
-        return std::make_tuple(new_weight, new_duration);
+
+        return result;
     };
 
-    std::vector<WeightAndDuration> accumulated_segment_data(updated_segments.size());
+    std::vector<SegmentValidityData> accumulated_segment_data(updated_segments.size());
     tbb::parallel_for(tbb::blocked_range<std::size_t>(0, updated_segments.size()),
                       [&](const auto &range)
                       {
                           for (auto index = range.begin(); index < range.end(); ++index)
                           {
                               accumulated_segment_data[index] =
-                                  compute_new_weight_and_duration(updated_segments[index]);
+                                  compute_segment_validity(updated_segments[index]);
                           }
                       });
 
@@ -740,19 +784,69 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
             geometry_id,
             [](const GeometryID lhs, const GeometryID rhs)
             { return std::tie(lhs.id, lhs.forward) < std::tie(rhs.id, rhs.forward); });
-        if (updated_iter != updated_segments.end() && updated_iter->id == geometry_id.id &&
+
+        if (updated_iter != updated_segments.end() &&
+            updated_iter->id == geometry_id.id &&
             updated_iter->forward == geometry_id.forward)
         {
-            // Find a segment with zero speed and simultaneously compute the new edge
-            // weight
-            EdgeWeight new_weight;
-            EdgeDuration new_duration;
-            std::tie(new_weight, new_duration) =
+            const auto& validity_data =
                 accumulated_segment_data[updated_iter - updated_segments.begin()];
 
-            // Update the node-weight cache. This is the weight of the edge-based-node
-            // only, it doesn't include the turn. We may visit the same node multiple times,
-            // but we should always assign the same value here.
+            // Get the segment position for this edge-based node
+            const auto segment_position = edge_based_node_to_segment_position[node_id];
+
+            // Check if THIS specific segment is invalid
+            bool this_segment_invalid = false;
+            if (segment_position < validity_data.segment_valid.size())
+            {
+                this_segment_invalid = !validity_data.segment_valid[segment_position];
+            }
+            else
+            {
+                // Shouldn't happen, but handle gracefully
+                util::Log(logWARNING) << "Segment position " << segment_position
+                                      << " out of bounds for geometry " << geometry_id.id;
+                this_segment_invalid = false;
+            }
+
+            // Compute weight for this specific segment only
+            EdgeWeight new_weight = {0};
+            EdgeDuration new_duration = {0};
+
+            if (this_segment_invalid)
+            {
+                // This edge traverses an invalid segment
+                new_weight = INVALID_EDGE_WEIGHT;
+                new_duration = INVALID_EDGE_DURATION;
+            }
+            else
+            {
+                // Get segment weight from segment_data for this specific segment
+                if (geometry_id.forward)
+                {
+                    const auto weights = segment_data.GetForwardWeights(geometry_id.id);
+                    const auto durations = segment_data.GetForwardDurations(geometry_id.id);
+                    if (segment_position < weights.size())
+                    {
+                        new_weight = alias_cast<EdgeWeight>(weights[segment_position]);
+                        new_duration = alias_cast<EdgeDuration>(durations[segment_position]);
+                    }
+                }
+                else
+                {
+                    const auto weights = segment_data.GetReverseWeights(geometry_id.id);
+                    const auto durations = segment_data.GetReverseDurations(geometry_id.id);
+                    // Reverse direction: map position from end
+                    auto reverse_position = weights.size() - 1 - segment_position;
+                    if (reverse_position < weights.size())
+                    {
+                        new_weight = alias_cast<EdgeWeight>(weights[reverse_position]);
+                        new_duration = alias_cast<EdgeDuration>(durations[reverse_position]);
+                    }
+                }
+            }
+
+            // Update the node-weight cache
             BOOST_ASSERT(edge.source < node_weights.size());
             node_weights[edge.source] =
                 from_alias<EdgeWeight::value_type>(node_weights[edge.source]) & 0x80000000
@@ -760,9 +854,7 @@ Updater::LoadAndUpdateEdgeExpandedGraph(std::vector<extractor::EdgeBasedEdge> &e
                     : new_weight;
             node_durations[edge.source] = new_duration;
 
-            // We found a zero-speed edge, so we'll skip this whole edge-based-edge
-            // which
-            // effectively removes it from the routing network.
+            // If segment is invalid, skip this edge
             if (new_weight == INVALID_EDGE_WEIGHT)
             {
                 edge.data.weight = INVALID_EDGE_WEIGHT;
