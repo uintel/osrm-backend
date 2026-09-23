@@ -114,9 +114,10 @@ Feature: Check zero speed updates
             | alternatives | true |
 
 
+        # 1 is on the closed segment, so it snaps to b, from where 2 is reachable
         When I route I should get
-          | from | to | code    | alternative |
-          |    1 |  2 | NoRoute |             |
+          | from | to | route   | code | alternative |
+          |    1 |  2 | abc,abc | Ok   |             |
 
 
     Scenario: Routing on restricted oneway
@@ -158,13 +159,11 @@ Feature: Check zero speed updates
             3,2,0
             """
 
-        # 2 is on the closed segment and 3 past the end of the way, so both snap to b.
-        # b to 1 stays on the one edge-based node too, but a target is only reachable
-        # by entering its node from the start, which the closure prevents.
+        # 2 is on the closed segment and 3 past the end of the way, so both snap to b
         When I route I should get
-          | waypoints | route           | code    |
-          | 1,2,3     | abc,abc,abc,abc | Ok      |
-          | 3,2,1     |                 | NoRoute |
+          | waypoints | route           | code |
+          | 1,2,3     | abc,abc,abc,abc | Ok   |
+          | 3,2,1     | abc,abc,abc,abc | Ok   |
 
 
     @trip
@@ -295,6 +294,7 @@ Feature: Check zero speed updates
         When I route I should get
           | from | to | route      | code    |
           | 1    | 2  | abcd,abcd  | Ok      |
+          | 2    | 1  | abcd,abcd  | Ok      |
           | x    | 1  | xa,abcd,abcd | Ok    |
           | 1    | d  |            | NoRoute |
           | 2    | y  |            | NoRoute |
@@ -332,7 +332,7 @@ Feature: Check zero speed updates
           | 2    | x  | abcd,xa,xa | Ok      |
 
         When I request a travel time matrix I should get
-          |   | 2  | x  |
-          | 1 | 20 | 40 |
-          | 2 | 0  | 60 |
-          | x | 60 | 0  |
+          |   | 1  | 2  | x  |
+          | 1 | 0  | 20 | 40 |
+          | 2 | 20 | 0  | 60 |
+          | x | 40 | 60 | 0  |

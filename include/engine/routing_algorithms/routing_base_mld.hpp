@@ -351,6 +351,14 @@ void relaxOutgoingEdges(const DataFacade<Algorithm> &facade,
                         const typename Heap::HeapNode &heapNode,
                         const Args &...args)
 {
+    if constexpr (DIRECTION == REVERSE_DIRECTION)
+    {
+        if (!canLeaveTargetSeed(facade, heapNode))
+        {
+            return;
+        }
+    }
+
     const auto &partition = facade.GetMultiLevelPartition();
     const auto &cells = facade.GetCellStorage();
     const auto &metric = facade.GetCellMetric();
@@ -527,8 +535,17 @@ void routingStep(const DataFacade<Algorithm> &facade,
         auto reverse_weight = reverseHeapNode->weight;
         auto path_weight = weight + reverse_weight;
 
+        const auto &source_node = DIRECTION == FORWARD_DIRECTION ? heapNode : *reverseHeapNode;
+        const auto &target_node = DIRECTION == FORWARD_DIRECTION ? *reverseHeapNode : heapNode;
+
         if (!shouldForceStep(force_step_nodes, heapNode, *reverseHeapNode) &&
-            (path_weight >= EdgeWeight{0}) && (path_weight < path_upper_bound))
+            (path_weight >= EdgeWeight{0}) && (path_weight < path_upper_bound) &&
+            canMeetAtNode(facade,
+                          heapNode.node,
+                          source_node.data.parent == source_node.node,
+                          source_node.weight,
+                          target_node.data.parent == target_node.node,
+                          target_node.weight))
         {
             middle_node = heapNode.node;
             path_upper_bound = path_weight;
