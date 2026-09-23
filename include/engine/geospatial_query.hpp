@@ -439,12 +439,16 @@ template <typename RTreeT, typename DataFacadeT> class GeospatialQuery
         // check phantom node segments validity
         auto areSegmentsValid = [](const auto &first, const auto &last) -> bool
         { return std::find(first, last, INVALID_SEGMENT_WEIGHT) == last; };
+        // A source only needs its own segment open: whether a closed segment further along
+        // stops it leaving the edge-based node is up to the search (see getLeavingNodeWeight),
+        // as a target before that closure is still reachable from it.
         bool is_forward_valid_source =
-            areSegmentsValid(forward_weights.begin(), forward_weights.end());
+            forward_weights[data.fwd_segment_position] != INVALID_SEGMENT_WEIGHT;
         bool is_forward_valid_target = areSegmentsValid(
             forward_weights.begin(), forward_weights.begin() + data.fwd_segment_position + 1);
         bool is_reverse_valid_source =
-            areSegmentsValid(reverse_weights.begin(), reverse_weights.end());
+            reverse_weights[reverse_weights.size() - data.fwd_segment_position - 1] !=
+            INVALID_SEGMENT_WEIGHT;
         bool is_reverse_valid_target = areSegmentsValid(
             reverse_weights.begin(), reverse_weights.end() - data.fwd_segment_position);
 

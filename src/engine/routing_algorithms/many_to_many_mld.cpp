@@ -37,6 +37,7 @@ void relaxBorderEdges(const DataFacade<mld::Algorithm> &facade,
                       const EdgeDistance distance,
                       SearchEngineData<mld::Algorithm>::ManyToManyQueryHeap &query_heap,
                       LevelID level,
+                      const bool is_source,
                       const EdgeWeight approach = EdgeWeight{0})
 {
     for (const auto edge : facade.GetBorderEdgeRange(level, node))
@@ -53,7 +54,13 @@ void relaxBorderEdges(const DataFacade<mld::Algorithm> &facade,
 
             const auto turn_id = data.turn_id;
             const auto node_id = DIRECTION == FORWARD_DIRECTION ? node : facade.GetTarget(edge);
-            const auto node_weight = facade.GetNodeWeight(node_id);
+            const auto node_weight = DIRECTION == FORWARD_DIRECTION
+                                         ? getLeavingNodeWeight(facade, node_id, is_source, weight)
+                                         : facade.GetNodeWeight(node_id);
+            if (node_weight == INVALID_EDGE_WEIGHT)
+            {
+                continue;
+            }
             const auto node_duration = facade.GetNodeDuration(node_id);
             const auto node_distance = facade.GetNodeDistance(node_id);
             const auto turn_weight =
@@ -214,6 +221,7 @@ void relaxOutgoingEdges(
                                 heapNode.data.distance,
                                 query_heap,
                                 level,
+                                heapNode.data.parent == heapNode.node,
                                 heapNode.data.approach);
 }
 
@@ -364,6 +372,7 @@ oneToManySearch(SearchEngineData<Algorithm> &engine_working_data,
                                         initial_distance,
                                         query_heap,
                                         0,
+                                        true,
                                         approach);
         }
         else
