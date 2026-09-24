@@ -331,8 +331,49 @@ Feature: Check zero speed updates
           | 1    | x  | abcd,xa,xa | Ok      |
           | 2    | x  | abcd,xa,xa | Ok      |
 
+        # Arriving at 2 heading east, the way ahead is closed, so turn around there
+        When I route I should get
+          | waypoints | route                 | code |
+          | 1,2,x     | abcd,abcd,abcd,xa,xa  | Ok   |
+
         When I request a travel time matrix I should get
           |   | 1  | 2  | x  |
           | 1 | 0  | 20 | 40 |
           | 2 | 20 | 0  | 60 |
           | x | 40 | 60 | 0  |
+
+
+    Scenario: Turning around at a waypoint heading towards a closed segment
+        Given the node map
+            """
+            x
+            |
+            a - 1 - 2 - 3 - b - c - d
+                                |
+                                y
+            """
+
+        And the ways
+            | nodes |
+            | abcd  |
+            | xa    |
+            | cy    |
+        And the contract extra arguments "--segment-speed-file {speeds_file}"
+        And the customize extra arguments "--segment-speed-file {speeds_file}"
+        # Node IDs (top-to-bottom, left-to-right): x=1, a=2, b=3, c=4, d=5, y=6
+        # Close b-c (3,4) in both directions: arriving at 3 heading east, the way
+        # ahead is closed, so the route has to turn around there.
+        And the speed file
+            """
+            3,4,0
+            4,3,0
+            """
+
+        When I route I should get
+          | waypoints | route               | time    | code |
+          | 2,3,1     | abcd,abcd,abcd,abcd | 60s +-1 | Ok   |
+          | 1,3,2     | abcd,abcd,abcd,abcd | 60s +-1 | Ok   |
+
+        When I route I should get
+          | waypoints | code    |
+          | 1,3,y     | NoRoute |
